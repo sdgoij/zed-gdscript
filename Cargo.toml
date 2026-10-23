@@ -5,12 +5,16 @@ zed_extension_api = "0.7.0"
 crate-type = ["cdylib"]
 path = "src/gdscript.rs"
 
+# The checkout may sit inside another Cargo workspace; an extension must build
+# on its own.
+[workspace]
+
 [package]
 edition = "2021"
 license = "MIT"
 name = "zed_gdscript"
 publish = false
-version = "0.9.0"
+version = "0.10.0"
 
 [profile.release]
 strip = true

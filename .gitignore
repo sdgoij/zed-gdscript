@@ -8,3 +8,5 @@ test.gd
 debug
 target
 Cargo.lock
+# A published binary is built from a pinned dependency set.
+!bridge/Cargo.lock

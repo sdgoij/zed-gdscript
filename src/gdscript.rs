@@ -1,53 +1,62 @@
 use std::net::Ipv4Addr;
 
 use zed_extension_api::{
-    self as zed,
-    serde_json::{self, Value},
-    DebugAdapterBinary, Result, StartDebuggingRequestArguments,
+    self as zed, serde_json, serde_json::Value, DebugAdapterBinary, DownloadedFileType,
+    GithubReleaseOptions, Result, StartDebuggingRequestArguments,
     StartDebuggingRequestArgumentsRequest, TcpArguments,
 };
 
-struct GDScriptExtension;
+/// Where the bridge binaries are published, one asset per platform.
+const BRIDGE_REPOSITORY: &str = "sdgoij/zed-gdscript";
+
+/// Godot's language server is part of the editor and speaks TCP, never stdio,
+/// so the command Zed starts is a supervisor that owns a Godot process. The
+/// supervisor is what makes this work without `nc`, keeps a private port per
+/// worktree and restarts the engine when it dies.
+struct GDScriptExtension {
+    /// The bridge once this session has it: restarting a server must not mean
+    /// downloading it again.
+    bridge: Option<String>,
+}
 
 impl zed::Extension for GDScriptExtension {
     fn new() -> Self {
-        Self
+        Self { bridge: None }
     }
 
     fn language_server_command(
         &mut self,
-        _language_server_id: &zed::LanguageServerId,
+        language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let lsp_settings = zed::settings::LspSettings::for_worktree("gdscript", worktree);
-        let mut args = None;
-        let mut path = None;
-        let mut env = None;
+        let binary = zed::settings::LspSettings::for_worktree("gdscript", worktree)
+            .ok()
+            .and_then(|settings| settings.binary);
 
-        if let Ok(lsp_settings) = lsp_settings {
-            if let Some(binary) = lsp_settings.binary {
-                args = binary.arguments;
-                path = binary.path;
-                env = binary.env;
-            }
-        }
+        let (configured, arguments, env) = match binary {
+            Some(binary) => (
+                binary.path,
+                binary.arguments.unwrap_or_default(),
+                binary.env.unwrap_or_default(),
+            ),
+            None => (None, Vec::new(), Default::default()),
+        };
 
-        // If the user didn't specify the binary, fall back to nc/ncat.
-        if path.is_none() {
-            let (os, _) = zed::current_platform();
+        // A path in the settings is how you point at a locally built bridge.
+        // Otherwise the published one is fetched, so nothing has to be found on
+        // the PATH and missing pieces are reported instead of silently killing
+        // the language server.
+        let command = match configured {
+            Some(path) => path,
+            None => self.ensure_bridge(language_server_id)?,
+        };
 
-            path = if os == zed::Os::Windows {
-                worktree.which("ncat").or_else(|| worktree.which("nc"))
-            } else {
-                worktree.which("nc").or_else(|| worktree.which("ncat"))
-            }
-        }
-
+        // Godot itself is resolved by the bridge, in the order `--godot`, then
+        // `GODOT_BIN`, then the PATH, and it says which of them failed.
         Ok(zed::Command {
-            command: path
-                .ok_or("nc or ncat must be installed and available on your PATH".to_string())?,
-            args: args.unwrap_or(vec!["127.0.0.1".to_string(), "6005".to_string()]),
-            env: env.unwrap_or_default().into_iter().collect(),
+            command,
+            args: arguments,
+            env: env.into_iter().collect(),
         })
     }
 
@@ -108,6 +117,92 @@ impl zed::Extension for GDScriptExtension {
                 _ => Err("`request` must be either `launch` or `attach`".into()),
             })
     }
+}
+
+impl GDScriptExtension {
+    /// The bridge for this platform, downloaded from the release on first use.
+    fn ensure_bridge(&mut self, language_server_id: &zed::LanguageServerId) -> Result<String> {
+        if let Some(bridge) = &self.bridge {
+            return Ok(bridge.clone());
+        }
+
+        let asset = bridge_asset_name()?;
+        zed::set_language_server_installation_status(
+            language_server_id,
+            &zed::LanguageServerInstallationStatus::Downloading,
+        );
+
+        let bridge = download_bridge(&asset).map_err(|error| {
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(error.clone()),
+            );
+            error
+        })?;
+
+        zed::set_language_server_installation_status(
+            language_server_id,
+            &zed::LanguageServerInstallationStatus::None,
+        );
+        self.bridge = Some(bridge.clone());
+        Ok(bridge)
+    }
+}
+
+fn bridge_asset_name() -> Result<String, String> {
+    let (os, architecture) = zed::current_platform();
+    let target = match (os, architecture) {
+        (zed::Os::Windows, zed::Architecture::X8664) => "x86_64-pc-windows-msvc.exe",
+        (zed::Os::Linux, zed::Architecture::X8664) => "x86_64-unknown-linux-gnu",
+        (zed::Os::Linux, zed::Architecture::Aarch64) => "aarch64-unknown-linux-gnu",
+        (zed::Os::Mac, zed::Architecture::X8664) => "x86_64-apple-darwin",
+        (zed::Os::Mac, zed::Architecture::Aarch64) => "aarch64-apple-darwin",
+        (os, architecture) => {
+            return Err(format!(
+                "There is no GDScript language server for {os:?} on {architecture:?}."
+            ))
+        }
+    };
+    Ok(format!("godot-lsp-bridge-{target}"))
+}
+
+fn download_bridge(asset_name: &str) -> Result<String, String> {
+    let release = zed::latest_github_release(
+        BRIDGE_REPOSITORY,
+        GithubReleaseOptions {
+            require_assets: true,
+            pre_release: false,
+        },
+    )?;
+
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == asset_name)
+        .ok_or_else(|| {
+            let available = release
+                .assets
+                .iter()
+                .map(|asset| asset.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Release {} of {BRIDGE_REPOSITORY} has no {asset_name} (it has: {available}). \
+                 To use a local build instead, put its path in `lsp.gdscript.binary.path`.",
+                release.version
+            )
+        })?;
+
+    zed::download_file(
+        &asset.download_url,
+        asset_name,
+        DownloadedFileType::Uncompressed,
+    )?;
+    if zed::current_platform().0 != zed::Os::Windows {
+        zed::make_file_executable(asset_name)?;
+    }
+
+    Ok(asset_name.to_string())
 }
 
 zed::register_extension!(GDScriptExtension);

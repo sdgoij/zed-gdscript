@@ -1,0 +1,77 @@
+name: Bridge
+
+# Publishes the `godot-lsp-bridge` supervisor as one asset per platform. The
+# extension downloads the asset for the machine it runs on, so no Godot, no
+# netcat and no build tools have to be present on the user's PATH.
+
+on:
+  push:
+    tags: ["bridge-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: godot-lsp-bridge-x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: godot-lsp-bridge-aarch64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset: godot-lsp-bridge-x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: godot-lsp-bridge-aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: godot-lsp-bridge-x86_64-pc-windows-msvc.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup target add ${{ matrix.target }}
+
+      - run: cargo build --release --manifest-path bridge/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Name the asset
+        shell: bash
+        run: |
+          built="bridge/target/${{ matrix.target }}/release/godot-lsp-bridge"
+          case "${{ matrix.asset }}" in
+            *.exe) built="$built.exe" ;;
+          esac
+          cp "$built" "${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - run: ls -l assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          body: |
+            `godot-lsp-bridge` for ${{ github.ref_name }}.
+
+            One binary per platform, downloaded automatically by the extension.

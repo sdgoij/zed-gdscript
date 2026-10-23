@@ -5,39 +5,90 @@ This extension adds support for [GDScript](https://docs.godotengine.org/en/stabl
 ## Requirements
 
 - Zed Editor.
-- Godot Engine (version 3.x or 4.x).
-- The program `nc` or `ncat` is available in your system PATH.
+- Godot Engine 4.x, installed anywhere. There is no netcat, no `PATH` entry and
+  no manual step required.
+
+## How it works
+
+Godot's GDScript language server is not a program: it lives inside the Godot
+editor and speaks TCP, while Zed speaks stdio and expects one server per
+worktree. This extension closes that gap with a small supervisor,
+[`godot-lsp-bridge`](bridge/), that
+
+- starts its own Godot (`--headless --editor`) for the project the worktree
+  names, on a port nobody else uses, so two projects can never answer for each
+  other;
+- restarts it when it dies, replaying the session, so an engine crash does not
+  mean restarting anything by hand;
+- reports *why* it cannot start one -- no Godot found, a project that fails to
+  load, a port it cannot open -- instead of silently doing nothing.
+
+Because the engine is a child of the bridge, closing the worktree closes it.
 
 ## How to install
-
-To get language server support in Godot, you will first need to install the Netcat program. Netcat is a small program that allows Zed and Godot to communicate with each other.
-
-### Installing Netcat
-
-You can install Netcat from your package manager:
-
-- On Ubuntu/Debian Linux: `sudo apt install netcat`.
-- On Fedora Linux: `sudo dnf install nmap-ncat`.
-- On macOS: `brew install netcat`.
-- On Windows, Netcat is integrated with [NMap](https://nmap.org/download#windows). To install it:
-  1. Download and run the latest stable release self-installer
-  2. Ensure Nmap Core files, Register Nmap Path, Npcap and Ncat are selected from the list of options
-  3. When prompted, accept and install Npcap
-
-Note that the installed program might be called `nc` or `ncat`, depending on your operating system and package manager (short for netcat). The extension will try to find either of them in your system PATH.
-
-### Installing the Zed GDScript Extension
 
 1. Open Zed.
 2. Go to Extensions.
 3. Search for *GDScript*.
 4. Click Install.
 
-### Starting the Godot Language Server
+The bridge binary is downloaded for your platform on first use, so there is
+nothing else to install.
 
-Unlike other programming languages, Godot's language server is part of the Godot editor. Godot uses the context of your project and scene files to provide auto-completion and project-specific error checks. So, to get the full experience of the Godot language server, you need to open your project in Godot.
+## Configuration
 
-After opening Godot, in Zed, you can use the command *editor: restart language server* to connect to Godot's language server.
+Out of the box the bridge finds Godot as `godot4`, `godot` or `Godot` on your
+`PATH`. To point it at a specific engine, set `GODOT_BIN` for the language
+server:
+
+```json
+{
+  "lsp": {
+    "gdscript": {
+      "binary": {
+        "env": {
+          "GODOT_BIN": "C:/Program Files/Godot/Godot_v4.7.2-stable_win64.exe"
+        }
+      }
+    }
+  }
+}
+```
+
+Arguments are passed straight to the bridge -- `--godot PATH` is the same
+setting, `--project DIR` overrides the worktree root (useful when the Godot
+project is a subdirectory of the repository):
+
+```json
+{
+  "lsp": {
+    "gdscript": {
+      "binary": {
+        "arguments": ["--godot", "/usr/bin/godot4", "--project", "./game"]
+      }
+    }
+  }
+}
+```
+
+`binary.path` replaces the downloaded bridge with your own build, which is what
+the dev workflow uses:
+
+```json
+{
+  "lsp": {
+    "gdscript": {
+      "binary": {
+        "path": "C:/src/zed-gdscript/bridge/target/release/godot-lsp-bridge.exe"
+      }
+    }
+  }
+}
+```
+
+If the engine does not understand `--lsp-port`, the bridge reports what Godot
+printed and gives up, rather than connecting to whatever happens to be on the
+default port.
 
 ### Opening GDScript files in Zed instead of Godot
 
@@ -48,30 +99,7 @@ If you have installed Godot and Zed via Flatpak on Linux, use the following para
 1. Set "Exec Path" to `flatpak-spawn`.
 2. Set "Exec Flags" to `--host flatpak run dev.zed.Zed {project} {file}:{line}:{col}`.
 
-## Configuration
-
-Godot's language server is part of the Godot editor, and you need to open your project in Godot to use it.
-
-By default, the extension matches the default settings of the Godot editor to connect to its language server:
-
-- Remote Host: 127.0.0.1
-- Remote Port: 6005
-
-You can change these settings in Godot by going to *Editor > Editor Settings > Network > Language Server*. If you do that, you'll need to change the settings in Zed to match. You can change these settings by adding the following JSON configuration to your `settings.json` file:
-
-```json
-{
-  "lsp": {
-    "gdscript": {
-      "binary": {
-        "arguments": ["127.0.0.1", "6005"]
-      }
-    }
-  }
-}
-```
-
-### Opening documentation in the Godot editor
+## Opening documentation in the Godot editor
 
 You can configure Godot to open the relevant documentation page when running the `editor: go to declaration` command on a built-in piece of code.
 

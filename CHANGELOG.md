@@ -2,6 +2,31 @@
 
 This file documents the changes made to the formatter with each release. This project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## Release 0.10.0 (unreleased)
+
+Language server support no longer needs netcat, and no longer needs you to run
+Godot yourself.
+
+### Added
+
+- `godot-lsp-bridge`, a supervisor that owns a Godot process per worktree
+  (`--headless --editor`, private port), restarts it when it dies and replays
+  the session. Released as an asset per platform and downloaded by the
+  extension on first use.
+- Actually useful errors: no Godot found, a project that fails to load and a
+  port that stays closed are reported through `window/showMessage`, with the
+  engine's own output attached.
+
+### Changed
+
+- `lsp.gdscript.binary.arguments` are now the bridge's arguments (`--godot`,
+  `--project`), not `host port` for netcat.
+- `GODOT_BIN` selects the engine to run.
+
+### Removed
+
+- The requirement to have `nc` or `ncat` on the `PATH`.
+
 ## Release 0.9.0 (2026-05-21)
 
 This release improves syntax highlighting in both GDScript and Godot shaders. Thanks to @YuriSizov for all the contributions!

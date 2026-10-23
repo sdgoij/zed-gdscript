@@ -2,9 +2,9 @@ authors = ["Mark Brand <mark@grndctrl.com>", "Richard Taylor <moomerman@gmail.co
 description = "Godot game engine support for Zed. Adds support for GDScript, Godot Resources (.tres, .tscn), and GDShader files."
 id = "gdscript"
 name = "GDScript"
-repository = "https://github.com/grndctrl/zed-gdscript"
+repository = "https://github.com/sdgoij/zed-gdscript"
 schema_version = 1
-version = "0.9.0"
+version = "0.10.0"
 
 [debug_adapters.godot]
 

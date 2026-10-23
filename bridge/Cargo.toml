@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "godot-lsp-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "A language server for GDScript that starts, watches and restarts Godot's own"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "godot-lsp-bridge"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
