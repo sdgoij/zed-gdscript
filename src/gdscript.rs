@@ -33,7 +33,7 @@ impl zed::Extension for GDScriptExtension {
             .ok()
             .and_then(|settings| settings.binary);
 
-        let (configured, arguments, env) = match binary {
+        let (configured, arguments, configured_env) = match binary {
             Some(binary) => (
                 binary.path,
                 binary.arguments.unwrap_or_default(),
@@ -53,10 +53,23 @@ impl zed::Extension for GDScriptExtension {
 
         // Godot itself is resolved by the bridge, in the order `--godot`, then
         // `GODOT_BIN`, then the PATH, and it says which of them failed.
+        //
+        // The PATH it inherits is Zed's, which is not necessarily the one a
+        // terminal sees: a Zed launched from a desktop entry keeps whatever
+        // environment existed when it started, so a directory added to PATH
+        // afterwards -- or only exported in a shell profile on Windows -- is
+        // invisible. `shell_env` is the login shell's environment, which is the
+        // one that knows where Godot is. Explicit `binary.env` entries still win.
+        let mut env = worktree.shell_env();
+        for (key, value) in configured_env {
+            env.retain(|(existing, _)| existing != &key);
+            env.push((key, value));
+        }
+
         Ok(zed::Command {
             command,
             args: arguments,
-            env: env.into_iter().collect(),
+            env,
         })
     }
 

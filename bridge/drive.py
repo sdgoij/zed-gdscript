@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 BRIDGE = r"C:\Users\T\src\github.com\sdgoij\goats\zed-gdscript\bridge\target\release\godot-lsp-bridge.exe"
-GODOT = r"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe"
+GODOT = r"C:\Users\T\bin\godot.exe"
 PROJECT = Path(r"C:\Users\T\src\github.com\sdgoij\goats\godot")
 
 # `py bridge/drive.py env` runs the bridge the way the extension starts it: no
@@ -145,7 +145,7 @@ if MODE == "env":
 
 print("3. killing the engine...")
 probe.write_text("extends Node\n\nfunc broken(:\n", encoding="utf-8")
-subprocess.run(["taskkill", "/F", "/IM", "Godot_v4.7.2-stable_win64.exe"],
+subprocess.run(["taskkill", "/F", "/IM", "godot.exe"],
                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 seen = []

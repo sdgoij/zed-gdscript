@@ -20,7 +20,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -131,6 +131,16 @@ fn run(options: Options) -> Result<(), String> {
         replay_ids: Vec::new(),
         next_replay_id: 9_000_001,
     }));
+
+    // The editor names the worktree, not the game: in a monorepo the project is
+    // usually below it.
+    let project = match resolve_project(&project) {
+        Ok(project) => project,
+        Err(error) => {
+            notify(&output, 1, &error);
+            return Err(error);
+        }
+    };
 
     let socket = match start(&godot, &project, &engine) {
         Ok(socket) => socket,
@@ -313,6 +323,12 @@ impl Engine {
 
     fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+        self.kill();
+    }
+
+    /// Kill the child without marking the engine stopped: a start that gave up
+    /// should not leave a Godot behind, but a restart should still be tried.
+    fn kill(&self) {
         if let Some(mut child) = self.child.lock().expect("child").take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -359,6 +375,19 @@ fn start(
     project: &std::path::Path,
     engine: &Arc<Engine>,
 ) -> Result<TcpStream, String> {
+    // Without this the engine starts in the Project Manager, which never opens
+    // the language server port -- so the failure is a minute of silence instead
+    // of the one thing that is actually wrong. Zed hands over the worktree
+    // root, which is not a project whenever the project lives below it.
+    if !project.join("project.godot").is_file() {
+        return Err(format!(
+            "{} is not a Godot project: there is no project.godot in it. Point the bridge \
+             at the directory that has one with --project (or `lsp.gdscript.binary.arguments` \
+             in Zed's settings).",
+            project.display()
+        ));
+    }
+
     let port = free_port()?;
     let mut command = Command::new(godot);
     command
@@ -399,6 +428,9 @@ fn start(
             ));
         }
         if Instant::now() >= deadline {
+            // A Godot that never opened the port would otherwise outlive the
+            // bridge: closing stdin only ends this process, not its children.
+            engine.kill();
             return Err(format!(
                 "Godot did not open port {port} for {} within {}s.{}",
                 project.display(),
@@ -599,7 +631,14 @@ fn find_godot(explicit: Option<&str>) -> Result<String, String> {
             return Ok(path);
         }
     }
-    Err("no Godot binary: pass --godot <path> or set GODOT_BIN".to_string())
+    // The PATH is in the message because "not found" is nearly always an
+    // environment problem, not a missing engine: the editor's PATH and a
+    // terminal's are not the same list.
+    Err(format!(
+        "no Godot binary: pass --godot <path> or set GODOT_BIN. Looked for godot4, godot \
+         and Godot in PATH={}",
+        std::env::var("PATH").unwrap_or_else(|_| "<unset>".to_string())
+    ))
 }
 
 fn which(name: &str) -> Option<String> {
@@ -613,6 +652,192 @@ fn which(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// How far below the worktree root a project may sit. Three levels covers
+/// `crates/game/client` without turning a large checkout into a filesystem tour.
+const PROJECT_SCAN_DEPTH: usize = 3;
+
+/// The project to run for `root`: `root` itself when it has a `project.godot`,
+/// otherwise the closest one below it.
+///
+/// The editor hands over the worktree, and in a monorepo the game is a
+/// subdirectory of that -- usually while every other subdirectory is not a game.
+/// The scan is bounded, and prunes what git ignores so `node_modules` and
+/// `target` are not walked. Ambiguity is an error rather than a guess.
+fn resolve_project(root: &Path) -> Result<PathBuf, String> {
+    if root.join("project.godot").is_file() {
+        return Ok(root.to_path_buf());
+    }
+
+    let mut rules = Vec::new();
+    let mut found = Vec::new();
+    scan(root, 1, &mut rules, &mut found);
+
+    if found.is_empty() {
+        return Err(format!(
+            "no Godot project: {} has no project.godot, and there is none up to {} levels \
+             below it. Point the bridge at one with --project (`lsp.gdscript.binary.arguments` \
+             in Zed's settings).",
+            root.display(),
+            PROJECT_SCAN_DEPTH
+        ));
+    }
+
+    // The closest project wins: a fixture three levels down is not a contender
+    // against the game one level down.
+    found.sort_by(|(left, left_depth), (right, right_depth)| {
+        left_depth.cmp(right_depth).then_with(|| left.cmp(right))
+    });
+    let closest = &found[0];
+    let tied: Vec<&PathBuf> = found
+        .iter()
+        .take_while(|(_, depth)| *depth == closest.1)
+        .map(|(path, _)| path)
+        .collect();
+    if tied.len() == 1 {
+        return Ok(closest.0.clone());
+    }
+
+    let names: Vec<String> = tied.iter().map(|path| path.display().to_string()).collect();
+    Err(format!(
+        "{} Godot projects below {} ({}). Pick one with --project.",
+        tied.len(),
+        root.display(),
+        names.join(", ")
+    ))
+}
+
+fn scan(dir: &Path, depth: usize, rules: &mut Vec<Rule>, found: &mut Vec<(PathBuf, usize)>) {
+    if depth > PROJECT_SCAN_DEPTH {
+        return;
+    }
+
+    // A `.gitignore` here applies to everything below it, and only below it: the
+    // rules are undone on the way back up.
+    let mark = rules.len();
+    read_gitignore(dir, rules);
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            // Links are not followed: one pointing at its own parent is a scan
+            // that never ends.
+            if !file_type.is_dir() {
+                continue;
+            }
+            // `.git`, `.godot`, `.venv`: nothing wanted is ever inside.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if is_ignored(&path, rules) {
+                continue;
+            }
+            if path.join("project.godot").is_file() {
+                found.push((path.clone(), depth));
+            }
+            scan(&path, depth + 1, rules, found);
+        }
+    }
+
+    rules.truncate(mark);
+}
+
+/// One line of a `.gitignore`, kept with the directory it was read from.
+struct Rule {
+    base: PathBuf,
+    pattern: String,
+    /// A pattern with a slash in it is relative to the file that declared it; a
+    /// bare name matches a directory at any depth below it.
+    anchored: bool,
+    negated: bool,
+}
+
+fn read_gitignore(dir: &Path, rules: &mut Vec<Rule>) {
+    let Ok(text) = std::fs::read_to_string(dir.join(".gitignore")) else {
+        return;
+    };
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (negated, line) = match line.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, line),
+        };
+        // Trailing `/` marks a directory; every candidate here is one.
+        let pattern = line.trim_end_matches('/');
+        if pattern.is_empty() {
+            continue;
+        }
+        rules.push(Rule {
+            base: dir.to_path_buf(),
+            pattern: pattern.trim_start_matches('/').to_string(),
+            anchored: pattern.starts_with('/') || pattern.contains('/'),
+            negated,
+        });
+    }
+}
+
+fn is_ignored(path: &Path, rules: &[Rule]) -> bool {
+    let mut ignored = false;
+    for rule in rules {
+        let Ok(relative) = path.strip_prefix(&rule.base) else {
+            continue;
+        };
+        if matches(rule, relative) {
+            // The last rule that matches decides, which is what lets `!keep`
+            // take a directory back out of an earlier `build/`.
+            ignored = !rule.negated;
+        }
+    }
+    ignored
+}
+
+fn matches(rule: &Rule, relative: &Path) -> bool {
+    let text = relative.to_string_lossy().replace('\\', "/");
+    if text.is_empty() {
+        return false;
+    }
+    if rule.anchored {
+        return glob(&rule.pattern, &text);
+    }
+    let name = text.rsplit('/').next().unwrap_or(&text);
+    glob(&rule.pattern, name)
+}
+
+/// gitignore's globbing, as far as deciding whether to walk a directory goes: `*`
+/// stops at a `/`, `**` does not, `?` is one character.
+fn glob(pattern: &str, text: &str) -> bool {
+    fn go(pattern: &[u8], text: &[u8]) -> bool {
+        let Some((&first, rest)) = pattern.split_first() else {
+            return text.is_empty();
+        };
+        match first {
+            b'*' => {
+                if let Some(&b'*') = rest.first() {
+                    let after = &rest[1..];
+                    // `**/` also matches no directory at all.
+                    if after.first() == Some(&b'/') && go(&after[1..], text) {
+                        return true;
+                    }
+                    (0..=text.len()).any(|i| go(after, &text[i..]))
+                } else {
+                    // A single `*` never crosses a directory separator.
+                    (0..=text.len())
+                        .take_while(|&i| i == 0 || text[i - 1] != b'/')
+                        .any(|i| go(rest, &text[i..]))
+                }
+            }
+            b'?' => text.first().is_some_and(|&byte| byte != b'/') && go(rest, &text[1..]),
+            byte => text.first() == Some(&byte) && go(rest, &text[1..]),
+        }
+    }
+    go(pattern.as_bytes(), text.as_bytes())
 }
 
 fn project_from(request: &Value) -> Option<PathBuf> {
@@ -736,4 +961,95 @@ fn position_to_offset(text: &str, line: u32, character: u32) -> usize {
         units += ch.len_utf16() as u32;
     }
     text.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A throwaway tree, empty on entry.
+    fn fixture(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("godot-lsp-bridge-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture");
+        dir
+    }
+
+    /// A directory that Godot would accept as a project.
+    fn project(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("project dir");
+        std::fs::write(dir.join("project.godot"), "config_version=5\n").expect("project.godot");
+        dir.to_path_buf()
+    }
+
+    #[test]
+    fn the_root_itself_can_be_the_project() {
+        let root = fixture("root");
+        project(&root);
+        assert_eq!(resolve_project(&root).unwrap(), root);
+    }
+
+    #[test]
+    fn finds_a_project_below_the_root() {
+        let root = fixture("below");
+        let game = project(&root.join("game"));
+        assert_eq!(resolve_project(&root).unwrap(), game);
+    }
+
+    #[test]
+    fn a_closer_project_wins() {
+        let root = fixture("closest");
+        let game = project(&root.join("game"));
+        project(&root.join("fixtures").join("sample"));
+        assert_eq!(resolve_project(&root).unwrap(), game);
+    }
+
+    #[test]
+    fn ignored_directories_are_not_walked() {
+        let root = fixture("ignored");
+        std::fs::write(root.join(".gitignore"), "vendor/\n").expect("gitignore");
+        project(&root.join("vendor").join("game"));
+        assert!(resolve_project(&root).is_err());
+    }
+
+    #[test]
+    fn a_negation_rule_takes_a_directory_back() {
+        let root = fixture("negated");
+        // `build/` would ignore the directory itself, and git cannot re-include
+        // below one of those; `build/*` only ignores its contents.
+        std::fs::write(root.join(".gitignore"), "build/*\n!build/game/\n").expect("gitignore");
+        let game = project(&root.join("build").join("game"));
+        assert_eq!(resolve_project(&root).unwrap(), game);
+    }
+
+    #[test]
+    fn the_scan_stops_at_the_depth_limit() {
+        let root = fixture("deep");
+        project(&root.join("a").join("b").join("c").join("game"));
+        assert!(resolve_project(&root).is_err());
+    }
+
+    #[test]
+    fn ambiguity_is_an_error_and_names_the_candidates() {
+        let root = fixture("ambiguous");
+        let left = project(&root.join("client"));
+        let right = project(&root.join("server"));
+        let error = resolve_project(&root).unwrap_err();
+        assert!(error.contains(&left.display().to_string()), "{error}");
+        assert!(error.contains(&right.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn glob_stops_at_a_separator_and_double_star_does_not() {
+        assert!(glob("game", "game"));
+        assert!(!glob("*", "a/b"));
+        assert!(glob("a/*", "a/b"));
+        assert!(!glob("a/*", "a/b/c"));
+        assert!(glob("**/game", "game"));
+        assert!(glob("**/game", "a/b/game"));
+        assert!(glob("a/**", "a/b/c"));
+        assert!(glob("gam?", "game"));
+        assert!(!glob("gam?", "games"));
+    }
 }

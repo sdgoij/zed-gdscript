@@ -13,9 +13,13 @@ Godot yourself.
   (`--headless --editor`, private port), restarts it when it dies and replays
   the session. Released as an asset per platform and downloaded by the
   extension on first use.
-- Actually useful errors: no Godot found, a project that fails to load and a
-  port that stays closed are reported through `window/showMessage`, with the
-  engine's own output attached.
+- Actually useful errors: no Godot found (with the `PATH` that was searched), a
+  worktree with no project up to three levels down, a project that fails to load
+  and a port that stays closed are reported through `window/showMessage`, with
+  the engine's own output attached.
+- Monorepo-friendly project detection: a worktree root with no `project.godot` is
+  scanned up to three levels deep, skipping what `.gitignore` ignores, and the
+  closest project is used. Ambiguity is reported instead of resolved by guessing.
 
 ### Changed
 
@@ -28,6 +32,14 @@ Godot yourself.
 ### Removed
 
 - The requirement to have `nc` or `ncat` on the `PATH`.
+
+### Fixed
+
+- The bridge is started with the shell's environment, so a `GODOT_BIN` or a
+  `PATH` entry that exists in a terminal but not in the editor's inherited
+  environment is still visible to it.
+- A Godot that never opened its language server port is killed when the start
+  gives up, instead of outliving the bridge.
 
 ## Release 0.9.0 (2026-05-21)
 

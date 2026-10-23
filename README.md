@@ -81,8 +81,7 @@ server:
 ```
 
 Arguments are passed straight to the bridge -- `--godot PATH` is the same
-setting, `--project DIR` overrides the worktree root (useful when the Godot
-project is a subdirectory of the repository):
+setting, `--project DIR` overrides the worktree root:
 
 ```json
 {
@@ -95,6 +94,12 @@ project is a subdirectory of the repository):
   }
 }
 ```
+
+`--project DIR` is rarely needed: when the worktree root has no `project.godot`
+the bridge looks up to three levels below it, skipping whatever `.gitignore`
+excludes, and runs the closest project it finds. A monorepo with the game in
+`game/`, `examples/demo/` or `crates/client/` needs no configuration. Two
+projects at the same depth are reported rather than guessed between.
 
 `binary.path` replaces the downloaded bridge with your own build, which is what
 the dev workflow uses:
