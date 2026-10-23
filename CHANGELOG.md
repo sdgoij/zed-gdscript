@@ -22,6 +22,8 @@ Godot yourself.
 - `lsp.gdscript.binary.arguments` are now the bridge's arguments (`--godot`,
   `--project`), not `host port` for netcat.
 - `GODOT_BIN` selects the engine to run.
+- macOS no longer gets a prebuilt bridge: the arm64 runners queue for too long,
+  so Mac users build `bridge/` themselves and set `lsp.gdscript.binary.path`.
 
 ### Removed
 

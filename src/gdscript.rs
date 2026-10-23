@@ -155,8 +155,15 @@ fn bridge_asset_name() -> Result<String, String> {
         (zed::Os::Windows, zed::Architecture::X8664) => "x86_64-pc-windows-msvc.exe",
         (zed::Os::Linux, zed::Architecture::X8664) => "x86_64-unknown-linux-gnu",
         (zed::Os::Linux, zed::Architecture::Aarch64) => "aarch64-unknown-linux-gnu",
-        (zed::Os::Mac, zed::Architecture::X8664) => "x86_64-apple-darwin",
-        (zed::Os::Mac, zed::Architecture::Aarch64) => "aarch64-apple-darwin",
+        // No macOS asset is published; `binary.path` is the escape hatch.
+        (zed::Os::Mac, _) => {
+            return Err(
+                "No prebuilt godot-lsp-bridge is published for macOS. Build one with \
+                 `cargo build --release --manifest-path bridge/Cargo.toml` and point \
+                 `binary.path` in the `gdscript` LSP settings at it."
+                    .into(),
+            )
+        }
         (os, architecture) => {
             return Err(format!(
                 "There is no GDScript language server for {os:?} on {architecture:?}."

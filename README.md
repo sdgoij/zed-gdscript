@@ -35,6 +35,31 @@ Because the engine is a child of the bridge, closing the worktree closes it.
 The bridge binary is downloaded for your platform on first use, so there is
 nothing else to install.
 
+### macOS
+
+macOS has no prebuilt binary: GitHub's arm64 runners queue for too long, so the
+release skips the platform. Build the bridge once instead -- no `--target` is
+needed, since a plain `cargo build` produces a binary for whichever machine
+(Intel or Apple Silicon) runs it:
+
+```sh
+cargo build --release --manifest-path bridge/Cargo.toml
+```
+
+Then point the extension at the result, and it stops looking for a download:
+
+```json
+{
+  "lsp": {
+    "gdscript": {
+      "binary": {
+        "path": "/Users/you/src/zed-gdscript/bridge/target/release/godot-lsp-bridge"
+      }
+    }
+  }
+}
+```
+
 ## Configuration
 
 Out of the box the bridge finds Godot as `godot4`, `godot` or `Godot` on your
